@@ -1,13 +1,17 @@
 #include "prog2.h"
 
+void starttimer(int AorB, float increment);
+
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 #define BUFFER_SIZE 16
 
-struct pky send_pkt_a[BUFFER_SIZE];
+struct pkt send_pkt_a[BUFFER_SIZE];
+struct pkt send_pkt_b;
 int base;
 int next_seqnum;
 int N;
+int expected_seqnum;
 
 void print_packet(struct pkt packet)
 {
@@ -72,18 +76,22 @@ void refuse_data(struct msg message){
         printf("Buffer Full");
         exit(1);
     }
-
-    send_pkt_a[next_seqnum % BUFFER_SIZE] = message;
+    send_pkt_a[next_seqnum % BUFFER_SIZE] = make_packet(next_seqnum, -1, message.data, 20);
+    next_seqnum++;
 }
 
-int is_in_window(){
-    if((base + N) < BUFFER_SIZE && next_seqnum < (base + N))
-        return 1;
-    else if((base + N) >= BUFFER_SIZE) && base < next_seqnum && next_seqnum < BUFFER_SIZE)
-        return 1;
-    else if((base + N) >= BUFFER_SIZE) && next_seqnum < (base + N) % BUFFER_SIZE)
-        return 1;
-    else return 0;
+int is_corrupt(struct pkt packet){
+    int checksum = get_checksum(packet);
+    // printf("%d %d %d\n", checksum, ~checksum, packet.checksum);
+    if(~checksum + packet.checksum == ~((int)0))
+        return 0;
+    return 1;
+}
+
+int has_expected_seqnum(int AorB, struct pkt packet){
+    if(AorB == B)
+        return expected_seqnum == packet.seqnum;
+    return 0;
 }
 
 /* called from layer 5, passed the data to be sent to other side */
@@ -93,11 +101,13 @@ int A_output(struct msg message)
     if(next_seqnum < base + N){
         send_pkt_a[next_seqnum % BUFFER_SIZE] = make_packet(next_seqnum, -1, message.data, 20);
         tolayer3(A, send_pkt_a[next_seqnum % BUFFER_SIZE]);
-        if(base == next_seqnum)
+        if(base == next_seqnum){}
             starttimer(A, 10.0);
         next_seqnum++;
     }else
         refuse_data(message);
+
+    printf("nextseqnum %d\n", next_seqnum);
     return 0;
 }
 
@@ -105,12 +115,27 @@ int A_output(struct msg message)
 int A_input(struct pkt packet)
 {
     (void)packet;
+    //print_packet(packet);
+    if(!is_corrupt(packet)){
+        // if(is_corrupt(packet))printf("Ack corrupted\n");
+        // if(!is_expected_ack(A, packet))printf("Ack doesn't have expected seqnum.\n");
+        // printf("retransmission\n");
+        base = packet.acknum + 1;
+        if(base == next_seqnum)
+            stoptimer(A);
+        else starttimer(A, 10.0);
+    }
     return 0;
 }
 
 /* called when A's timer goes off */
 int A_timerinterrupt()
 {
+    int i;
+    starttimer(A, 10.0);
+    for(i = base; i < next_seqnum; i++){
+        tolayer3(A, send_pkt_a[i % BUFFER_SIZE]);
+    }
     return 0;
 }
 
@@ -130,6 +155,14 @@ int A_init()
 int B_input(struct pkt packet)
 {
     (void)packet;
+    if(!is_corrupt(packet) && has_expected_seqnum(B, packet)){
+        struct msg message = extract_data(packet);
+        tolayer5(B, message.data);
+
+        send_pkt_b = make_packet(-1, expected_seqnum, NULL, 0);
+        tolayer3(B, send_pkt_b);
+        expected_seqnum++;
+    }else tolayer3(B, send_pkt_b);
     return 0;
 }
 
@@ -143,6 +176,8 @@ int B_timerinterrupt()
 /* entity B routines are called. You can use it to do any initialization */
 int B_init()
 {
+    expected_seqnum = 0;
+    send_pkt_b = make_packet(-1, -1, NULL, 0);
     return 0;
 }
 
