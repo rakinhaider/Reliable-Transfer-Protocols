@@ -4,6 +4,9 @@ void starttimer(int AorB, float increment);
 
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
+#define RTO_TIMEOUT 12
+#define DEBUG 1
+
 int seqnum_a; /* current sequence number of packet*/
 int seqnum_b; /* current expected sequence number of packet*/
 int pkt_inflight_a;
@@ -90,8 +93,9 @@ int A_output(struct msg message)
     if(pkt_inflight_a) return 0;
     (void)message;
     send_pkt_a = make_packet(seqnum_a, -1, message.data, 20);
+    if(DEBUG)print_packet(send_pkt_a);
     tolayer3(A, send_pkt_a);
-    starttimer(A, 10.0);
+    starttimer(A, RTO_TIMEOUT);
     pkt_inflight_a = 1;
     return 0;
 }
@@ -100,7 +104,6 @@ int A_output(struct msg message)
 int A_input(struct pkt packet)
 {
     (void)packet;
-    //print_packet(packet);
     if(!pkt_inflight_a){
         // printf("No inflight packet. Discard.\n");
         return 0;
@@ -126,7 +129,7 @@ int A_timerinterrupt()
     // printf("Timeout occurred. Retransmission and restart timer.\n");
     // print_packet(send_pkt_a);
     tolayer3(A, send_pkt_a);
-    starttimer(A, 10.0);
+    starttimer(A, RTO_TIMEOUT);
     return 0;
 }
 
@@ -198,7 +201,7 @@ int main()
     struct pkt pkt2give;
 
     int i, j;
-
+    printf("%d", INT_MAX);
     init();
     A_init();
     B_init();

@@ -4,12 +4,25 @@ void starttimer(int AorB, float increment);
 
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
+#define BUFFER_SIZE 16
+#define ind(x) (x) % BUFFER_SIZE
+#define RTO_TIMEOUT 40
+
 struct pkt send_pkt_a[BUFFER_SIZE];
 struct pkt send_pkt_b;
-int base;
-int next_seqnum;
+// Don't need too big buffet only a buffer of window size will work.
+// To reduce complication, big buffer is used.
+struct pkt received_pkt_b[BUFFER_SIZE];
+
+int acked_a[BUFFER_SIZE];
+int acked_b[BUFFER_SIZE];
+
+float timers[BUFFER_SIZE];
+int send_base;
+int next_seqnum_a;
 int N;
 int expected_seqnum;
+int rcv_base;
 
 void print_packet(struct pkt packet)
 {
@@ -71,13 +84,14 @@ struct pkt make_packet(int seqnum, int acknum, char* data, int datalen)
 
 void refuse_data(struct msg message)
 {
-    if(next_seqnum == base + BUFFER_SIZE)
+    if(next_seqnum_a == send_base + BUFFER_SIZE)
     {
         printf("Buffer Full");
         exit(1);
     }
-    send_pkt_a[next_seqnum % BUFFER_SIZE] = make_packet(next_seqnum, -1, message.data, 20);
-    next_seqnum++;
+    send_pkt_a[ind(next_seqnum_a)] =
+        make_packet(next_seqnum_a, -1, message.data, 20);
+    next_seqnum_a++;
 }
 
 int is_corrupt(struct pkt packet)
@@ -96,22 +110,38 @@ int has_expected_seqnum(int AorB, struct pkt packet)
     return 0;
 }
 
+void transmit(int seqnum)
+{
+    print_packet(send_pkt_a[ind(seqnum)]);
+    acked_a[ind(seqnum)] = 0;
+    // printf("seqnum %d mod %d ack %d\n",
+    // seqnum, ind(seqnum), acked_a[ind(seqnum)]);
+    tolayer3(A, send_pkt_a[ind(seqnum)]);
+    // printf("sndb %d seqn %d\n", send_base, seqnum);
+    if(send_base == seqnum)
+    {
+        // printf("Starting timer.\n");
+        starttimer(A, RTO_TIMEOUT);
+    }
+    timers[ind(seqnum)] = time + RTO_TIMEOUT;
+}
+
 /* called from layer 5, passed the data to be sent to other side */
 int A_output(struct msg message)
 {
     (void)message;
-    if(next_seqnum < base + N)
+    if(next_seqnum_a < send_base + N)
     {
-        send_pkt_a[next_seqnum % BUFFER_SIZE] = make_packet(next_seqnum, -1, message.data, 20);
-        tolayer3(A, send_pkt_a[next_seqnum % BUFFER_SIZE]);
-        if(base == next_seqnum) {}
-        starttimer(A, 10.0);
-        next_seqnum++;
+        send_pkt_a[ind(next_seqnum_a)] =
+            make_packet(next_seqnum_a, -1, message.data, 20);
+        transmit(next_seqnum_a);
+        next_seqnum_a++;
     }
     else
         refuse_data(message);
 
-    printf("nextseqnum %d\n", next_seqnum);
+    // printf("nextseqnum %d\n", next_seqnum_a);
+    // printf("time %f\n", time);
     return 0;
 }
 
@@ -119,12 +149,76 @@ int A_output(struct msg message)
 int A_input(struct pkt packet)
 {
     (void)packet;
+    int i, prev_end;
+    if(send_base <= packet.acknum && packet.acknum < send_base + N)
+    {
+        print_packet(packet);
+        acked_a[ind(packet.acknum)] = 1;
+        if(packet.acknum == send_base)
+        {
+            stoptimer(A);
+            i = send_base;
+            while(acked_a[ind(i)] && i < send_base + N)
+            {
+                i++;
+                acked_a[ind(i + N -1)] = 0;
+            }
+            // printf("Acked up to %d\n", i);
+            prev_end = send_base + N;
+            send_base = i;
+            if(send_base != prev_end && send_base < next_seqnum_a)
+            {
+                // printf("starting timer for %d\n", send_base);
+                starttimer(A, timers[ind(send_base)] - time);
+            }
+            for(i = prev_end; i < next_seqnum_a; i++)
+            {
+                // printf("Sliding window. transmitting %d\n", i);
+                transmit(i);
+                if(i == send_base + N -1)
+                    break;
+            }
+        }
+    }
+    /*
+    for(i=send_base; i < send_base + N; i++)
+        printf("%d\t", i);
+    printf("\n");
+    for(i=send_base; i < send_base + N; i++)
+        printf("%d\t", acked_a[ind(i)]);
+    printf("\n");
+    */
     return 0;
 }
 
 /* called when A's timer goes off */
 int A_timerinterrupt()
 {
+    int i, retxi;
+    float min;
+    /*
+    printf("time %f\n", time);
+    for(i = send_base; i< next_seqnum_a; i++)
+        printf("%f ", timers[ind(i)]);
+    printf("\n");
+    */
+    for(i = send_base; i < next_seqnum_a; i++)
+    {
+        if(timers[ind(i)] == time)break;
+    }
+    // printf("timeout n %d\n", i);
+    transmit(i);
+    retxi = i;
+    /*for(i = send_base; i< next_seqnum_a; i++)
+        printf("%f ", timers[ind(i)]);*/
+    min = timers[ind(send_base)];
+    for(i = send_base; i < next_seqnum_a; i++)
+    {
+        if(min > timers[ind(i)] && !acked_a[ind(i)]) min = timers[ind(i)];
+    }
+    // printf("min time %f\n", min);
+    if(retxi != send_base)
+        starttimer(A, min-time);
     return 0;
 }
 
@@ -132,6 +226,13 @@ int A_timerinterrupt()
 /* entity A routines are called. You can use it to do any initialization */
 int A_init()
 {
+    int i;
+    // printf("time %f\n", time);
+    send_base = 0;
+    next_seqnum_a = 0;
+    N = 8;
+    for(i = 0; i < BUFFER_SIZE; i++)
+        acked_a[i] = 0;
     return 0;
 }
 
@@ -141,12 +242,47 @@ int A_init()
 int B_input(struct pkt packet)
 {
     (void)packet;
+    int i;
+    // printf("is_corrupt %d\n", is_corrupt(packet));
+    if(!is_corrupt(packet))
+    {
+        print_packet(packet);
+        if(rcv_base <= packet.seqnum && packet.seqnum < rcv_base + N)
+        {
+            received_pkt_b[ind(packet.seqnum)] = packet;
+            send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
+            tolayer3(B, send_pkt_b);
+            acked_b[ind(packet.seqnum)] = 1;
+            if(rcv_base == packet.seqnum)
+            {
+                while(acked_b[ind(rcv_base)])
+                {
+                    struct msg message =
+                        extract_data(received_pkt_b[ind(rcv_base)]);
+                    tolayer5(B, message.data);
+                    rcv_base++;
+                    acked_b[ind(rcv_base + N -1)] = 0;
+                }
+            }
+            /*for(i=rcv_base; i < rcv_base+ N; i++)
+                printf("%d\t", i);
+            printf("\n");
+            for(i=rcv_base; i < rcv_base+ N; i++)
+                printf("%d\t", ind(i));
+            printf("\n");
+            for(i=rcv_base; i < rcv_base + N; i++)
+                printf("%d\t", acked_b[ind(i)]);
+            printf("\n");
+            */
+        }
+    }
     return 0;
 }
 
 /* called when B's timer goes off */
 int B_timerinterrupt()
 {
+    //printf("time %f\n", time);
     return 0;
 }
 
@@ -154,6 +290,10 @@ int B_timerinterrupt()
 /* entity B routines are called. You can use it to do any initialization */
 int B_init()
 {
+    int i;
+    // printf("time %f\n", time);
+    rcv_base = 0;
+    for(i = 0; i< BUFFER_SIZE; i++) acked_b[i] = 0;
     return 0;
 }
 

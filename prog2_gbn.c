@@ -5,6 +5,8 @@ void starttimer(int AorB, float increment);
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 #define BUFFER_SIZE 16
+#define RTO_TIMEOUT 12
+#define DEBUG 1
 
 struct pkt send_pkt_a[BUFFER_SIZE];
 struct pkt send_pkt_b;
@@ -101,8 +103,8 @@ int A_output(struct msg message)
     if(next_seqnum < base + N){
         send_pkt_a[next_seqnum % BUFFER_SIZE] = make_packet(next_seqnum, -1, message.data, 20);
         tolayer3(A, send_pkt_a[next_seqnum % BUFFER_SIZE]);
-        if(base == next_seqnum){}
-            starttimer(A, 10.0);
+        if(base == next_seqnum)
+            starttimer(A, RTO_TIMEOUT);
         next_seqnum++;
     }else
         refuse_data(message);
@@ -123,7 +125,7 @@ int A_input(struct pkt packet)
         base = packet.acknum + 1;
         if(base == next_seqnum)
             stoptimer(A);
-        else starttimer(A, 10.0);
+        else starttimer(A, RTO_TIMEOUT);
     }
     return 0;
 }
