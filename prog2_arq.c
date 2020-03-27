@@ -5,7 +5,7 @@ void starttimer(int AorB, float increment);
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 #define RTO_TIMEOUT 12
-#define DEBUG 1
+#define DEBUG 0
 
 int seqnum_a; /* current sequence number of packet*/
 int seqnum_b; /* current expected sequence number of packet*/
@@ -15,14 +15,14 @@ struct pkt send_pkt_b; /* Last sent packet by B*/
 
 void print_packet(struct pkt packet){
     if(packet.seqnum >= 0 && packet.acknum >= 0){
-        printf("secnum = %d, acknum = %d, checksum = %d, data = %s\n",
+        printf("secnum = %d, acknum = %d, checksum = %d, data = %.20s\n",
             packet.seqnum,
             packet.acknum,
             packet.checksum,
             packet.payload);
     }
     else if(packet.seqnum >= 0){
-        printf("secnum = %d, checksum = %d, data = %s\n",
+        printf("secnum = %d, checksum = %d, data = %.20s\n",
             packet.seqnum,
             packet.checksum,
             packet.payload);
@@ -105,19 +105,26 @@ int A_input(struct pkt packet)
 {
     (void)packet;
     if(!pkt_inflight_a){
-        // printf("No inflight packet. Discard.\n");
+        if(DEBUG)
+            printf("No inflight packet. Discard.\n");
         return 0;
     }
     if(is_corrupt(packet) || !is_expected_ack(A, packet)){
-        // if(is_corrupt(packet))printf("Ack corrupted\n");
-        // if(!is_expected_ack(A, packet))printf("Ack doesn't have expected seqnum.\n");
-        // printf("retransmission\n");
-        tolayer3(A, send_pkt_a);
+        if(DEBUG)
+        {
+            if(is_corrupt(packet))printf("Ack corrupted\n");
+            if(!is_expected_ack(A, packet))
+                printf("Ack doesn't have expected seqnum.\n");
+            printf("Ignore\n");
+        }
+        // tolayer3(A, send_pkt_a);
     }
     else if(!is_corrupt(packet) && is_expected_ack(A, packet)){
         seqnum_a = (seqnum_a + 1) % 2;
         pkt_inflight_a = 0;
-        // printf("correct ack received. change state. expected %d\n", seqnum_a);
+        if(DEBUG)
+            printf("correct ack received. change state. expected %d\n",
+                    seqnum_a);
         stoptimer(A);
     }
     return 0;
@@ -126,8 +133,10 @@ int A_input(struct pkt packet)
 /* called when A's timer goes off */
 int A_timerinterrupt()
 {
-    // printf("Timeout occurred. Retransmission and restart timer.\n");
-    // print_packet(send_pkt_a);
+    if(DEBUG){
+        printf("Timeout occurred. Retransmission and restart timer.\n");
+        print_packet(send_pkt_a);
+    }
     tolayer3(A, send_pkt_a);
     starttimer(A, RTO_TIMEOUT);
     return 0;
@@ -148,11 +157,15 @@ int A_init()
 int B_input(struct pkt packet)
 {
     (void)packet;
-    // print_packet(packet);
-    // printf("is_corrupt=%d, has_exp_seqnumber=%d\n", is_corrupt(packet), has_expected_seqnum(B, packet));
+    if(DEBUG){
+        print_packet(packet);
+        printf("is_corrupt=%d, has_exp_seqnumber=%d\n",
+                is_corrupt(packet), has_expected_seqnum(B, packet));
+    }
 
     if(is_corrupt(packet) || !has_expected_seqnum(B, packet)){
-        // printf("retransmit previous ack\n");
+        if(DEBUG)
+            printf("retransmit previous ack\n");
         tolayer3(B, send_pkt_b);
     }
     else if(!is_corrupt(packet) && has_expected_seqnum(B, packet)){
@@ -162,7 +175,9 @@ int B_input(struct pkt packet)
         send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
         tolayer3(B, send_pkt_b);
         seqnum_b = (seqnum_b + 1) % 2;
-        // printf("message received, delivered, acked. expected %d\n", seqnum_b);
+        if(DEBUG)
+            printf("message received, delivered, acked. expected %d\n",
+                    seqnum_b);
     }
     return 0;
 }
@@ -201,7 +216,7 @@ int main()
     struct pkt pkt2give;
 
     int i, j;
-    printf("%d", INT_MAX);
+
     init();
     A_init();
     B_init();
