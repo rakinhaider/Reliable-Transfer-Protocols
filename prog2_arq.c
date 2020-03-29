@@ -1,10 +1,8 @@
 #include "prog2.h"
 
-void starttimer(int AorB, float increment);
-
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
-#define RTO_TIMEOUT 12
+#define RTO_TIMEOUT 20
 #define DEBUG 0
 
 int seqnum_a; /* current sequence number of packet*/

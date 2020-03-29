@@ -1,12 +1,12 @@
 #include "prog2.h"
 
-void starttimer(int AorB, float increment);
-
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
-#define BUFFER_SIZE 16
+#define BUFFER_SIZE 150
 #define ind(x) (x) % BUFFER_SIZE
-#define RTO_TIMEOUT 40
+#define RTO_TIMEOUT 20
+#define DEBUG 0
+#define min(x, y) (x) > (y) ? (y) : (x)
 
 struct pkt send_pkt_a[BUFFER_SIZE];
 struct pkt send_pkt_b;
@@ -28,7 +28,7 @@ void print_packet(struct pkt packet)
 {
     if(packet.seqnum >= 0 && packet.acknum >= 0)
     {
-        printf("secnum = %d, acknum = %d, checksum = %d, data = %s\n",
+        printf("secnum = %d, acknum = %d, checksum = %d, data = %.20s\n",
                packet.seqnum,
                packet.acknum,
                packet.checksum,
@@ -36,7 +36,7 @@ void print_packet(struct pkt packet)
     }
     else if(packet.seqnum >= 0)
     {
-        printf("secnum = %d, checksum = %d, data = %s\n",
+        printf("secnum = %d, checksum = %d, data = %.20s\n",
                packet.seqnum,
                packet.checksum,
                packet.payload);
@@ -110,19 +110,24 @@ int has_expected_seqnum(int AorB, struct pkt packet)
     return 0;
 }
 
+float get_min_timer_time(){
+    int i, endwnd;
+    float minimum=timers[ind(send_base)];
+    endwnd = min(send_base + N, next_seqnum_a);
+    for(i=send_base; i<endwnd; i++){
+        if(minimum >= timers[ind(i)] && !acked_a[ind(i)])
+            minimum = timers[ind(i)];
+    }
+    return minimum;
+}
+
 void transmit(int seqnum)
 {
-    print_packet(send_pkt_a[ind(seqnum)]);
     acked_a[ind(seqnum)] = 0;
     // printf("seqnum %d mod %d ack %d\n",
     // seqnum, ind(seqnum), acked_a[ind(seqnum)]);
     tolayer3(A, send_pkt_a[ind(seqnum)]);
     // printf("sndb %d seqn %d\n", send_base, seqnum);
-    if(send_base == seqnum)
-    {
-        // printf("Starting timer.\n");
-        starttimer(A, RTO_TIMEOUT);
-    }
     timers[ind(seqnum)] = time + RTO_TIMEOUT;
 }
 
@@ -135,13 +140,18 @@ int A_output(struct msg message)
         send_pkt_a[ind(next_seqnum_a)] =
             make_packet(next_seqnum_a, -1, message.data, 20);
         transmit(next_seqnum_a);
+        if(send_base == next_seqnum_a)
+            starttimer(A, RTO_TIMEOUT);
         next_seqnum_a++;
     }
     else
         refuse_data(message);
 
-    // printf("nextseqnum %d\n", next_seqnum_a);
-    // printf("time %f\n", time);
+    if(DEBUG){
+        printf("nextseqnum %d\n", next_seqnum_a);
+        print_packet(send_pkt_a[ind(next_seqnum_a-1)]);
+        if(!(next_seqnum_a - 1 < send_base + N))printf("Packet Buffered.\n");
+    }
     return 0;
 }
 
@@ -150,9 +160,10 @@ int A_input(struct pkt packet)
 {
     (void)packet;
     int i, prev_end;
-    if(send_base <= packet.acknum && packet.acknum < send_base + N)
+    float minimum;
+    if(send_base <= packet.acknum && packet.acknum < send_base + N
+            && !is_corrupt(packet))
     {
-        print_packet(packet);
         acked_a[ind(packet.acknum)] = 1;
         if(packet.acknum == send_base)
         {
@@ -163,62 +174,82 @@ int A_input(struct pkt packet)
                 i++;
                 acked_a[ind(i + N -1)] = 0;
             }
-            // printf("Acked up to %d\n", i);
+            if(DEBUG)printf("Acked up to %d\n", i);
             prev_end = send_base + N;
             send_base = i;
-            if(send_base != prev_end && send_base < next_seqnum_a)
+            for(i = prev_end; i < (min(next_seqnum_a, send_base + N)); i++)
             {
-                // printf("starting timer for %d\n", send_base);
-                starttimer(A, timers[ind(send_base)] - time);
-            }
-            for(i = prev_end; i < next_seqnum_a; i++)
-            {
-                // printf("Sliding window. transmitting %d\n", i);
+                if(DEBUG)printf("Transmitting %d\n", i);
                 transmit(i);
-                if(i == send_base + N -1)
-                    break;
+            }
+            if(send_base < next_seqnum_a)
+            {
+                if(DEBUG)printf("starting timer for %d\n", send_base);
+                starttimer(A, get_min_timer_time() - time);
             }
         }
+        else{
+            stoptimer(A);
+            minimum = get_min_timer_time();
+            if(DEBUG)
+                printf("Earliest timer will timeout at %f\n",
+                        minimum);
+            starttimer(A, minimum-time);
+        }
     }
-    /*
-    for(i=send_base; i < send_base + N; i++)
-        printf("%d\t", i);
-    printf("\n");
-    for(i=send_base; i < send_base + N; i++)
-        printf("%d\t", acked_a[ind(i)]);
-    printf("\n");
-    */
+    if(DEBUG){
+        printf("Corrupted: %d\n", is_corrupt(packet));
+        if(!is_corrupt(packet))print_packet(packet);
+        printf("SNDWND:\t");
+        for(i=send_base; i < send_base + N; i++)
+            printf("%d\t", i);
+        printf("\nACKED:\t");
+        for(i=send_base; i < send_base + N; i++)
+            printf("%d\t", acked_a[ind(i)]);
+        printf("\n");
+    }
     return 0;
 }
 
 /* called when A's timer goes off */
 int A_timerinterrupt()
 {
-    int i, retxi;
-    float min;
+    int i, retxi, endwnd;
+    float minimum;
     /*
     printf("time %f\n", time);
     for(i = send_base; i< next_seqnum_a; i++)
         printf("%f ", timers[ind(i)]);
     printf("\n");
     */
-    for(i = send_base; i < next_seqnum_a; i++)
+    endwnd = min(send_base+N, next_seqnum_a);
+    for(i = send_base; i < endwnd; i++)
     {
-        if(timers[ind(i)] == time)break;
+        if(timers[ind(i)] == time && !acked_a[ind(i)])
+            break;
     }
     // printf("timeout n %d\n", i);
     transmit(i);
     retxi = i;
-    /*for(i = send_base; i< next_seqnum_a; i++)
-        printf("%f ", timers[ind(i)]);*/
-    min = timers[ind(send_base)];
-    for(i = send_base; i < next_seqnum_a; i++)
-    {
-        if(min > timers[ind(i)] && !acked_a[ind(i)]) min = timers[ind(i)];
+    if(DEBUG){
+        printf("Timedout Packet: %d\n", retxi);
+        printf("Timers:\t");
+        for(i = send_base; i< endwnd; i++)
+            printf("%f\t", timers[ind(i)]);
+        printf("\nACKED:\t");
+        for(i = send_base; i< endwnd; i++)
+            printf("%d\t", acked_a[ind(i)]);
+        printf("\nNONACKED TIMERS:\t");
+        for(i = send_base; i< endwnd; i++)
+            if(!acked_a[ind(i)])printf("%f\t", timers[ind(i)]);
+        printf("\nNONACKED Packets:\t");
+        for(i = send_base; i< endwnd; i++)
+            if(!acked_a[ind(i)])printf("%d\t", i);
     }
-    // printf("min time %f\n", min);
-    if(retxi != send_base)
-        starttimer(A, min-time);
+
+    minimum = get_min_timer_time();
+    if(DEBUG)printf("\nMin time %f\n", minimum);
+    starttimer(A, minimum-time);
     return 0;
 }
 
@@ -246,7 +277,6 @@ int B_input(struct pkt packet)
     // printf("is_corrupt %d\n", is_corrupt(packet));
     if(!is_corrupt(packet))
     {
-        print_packet(packet);
         if(rcv_base <= packet.seqnum && packet.seqnum < rcv_base + N)
         {
             received_pkt_b[ind(packet.seqnum)] = packet;
@@ -264,17 +294,26 @@ int B_input(struct pkt packet)
                     acked_b[ind(rcv_base + N -1)] = 0;
                 }
             }
-            /*for(i=rcv_base; i < rcv_base+ N; i++)
-                printf("%d\t", i);
-            printf("\n");
-            for(i=rcv_base; i < rcv_base+ N; i++)
-                printf("%d\t", ind(i));
-            printf("\n");
-            for(i=rcv_base; i < rcv_base + N; i++)
-                printf("%d\t", acked_b[ind(i)]);
-            printf("\n");
-            */
+        }else if(rcv_base - N <= packet.seqnum && packet.seqnum <=rcv_base-1){
+            send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
+            tolayer3(B, send_pkt_b);
         }
+    }
+    if(DEBUG){
+        printf("Corrupted: %d\n", is_corrupt(packet));
+        if(!is_corrupt(packet))print_packet(packet);
+        printf("RCVWND:\t");
+        for(i=rcv_base; i < rcv_base+ N; i++)
+            printf("%d\t", i);
+        printf("\n");
+        printf("INDEX:\t");
+        for(i=rcv_base; i < rcv_base+ N; i++)
+            printf("%d\t", ind(i));
+        printf("\n");
+        printf("ACKED:\t");
+        for(i=rcv_base; i < rcv_base + N; i++)
+            printf("%d\t", acked_b[ind(i)]);
+        printf("\n");
     }
     return 0;
 }
