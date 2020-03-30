@@ -4,6 +4,11 @@
 
 #define RTO_TIMEOUT 20
 #define DEBUG 0
+#define FINAL 0
+#define R 1
+#define T 0
+
+int is_corrupt(struct pkt packet);
 
 int seqnum_a; /* current sequence number of packet*/
 int seqnum_b; /* current expected sequence number of packet*/
@@ -11,7 +16,15 @@ int pkt_inflight_a;
 struct pkt send_pkt_a; /* Last sent packet by A*/
 struct pkt send_pkt_b; /* Last sent packet by B*/
 
-void print_packet(struct pkt packet){
+void print_message(struct msg message){
+    printf("Message Received:");
+    printf("%.20s\n", message.data);
+}
+
+void print_packet(struct pkt packet, int RorT){
+    if(is_corrupt(packet))printf("Corrupted ");
+    if(RorT == R)printf("Packet Received:");
+    else printf("Packet Transmitted:");
     if(packet.seqnum >= 0 && packet.acknum >= 0){
         printf("secnum = %d, acknum = %d, checksum = %d, data = %.20s\n",
             packet.seqnum,
@@ -25,7 +38,7 @@ void print_packet(struct pkt packet){
             packet.checksum,
             packet.payload);
     }else if(packet.acknum >= 0){
-        printf("ack_received = %d\n", packet.acknum);
+        printf("acknum= %d data=\n", packet.acknum);
     }
 }
 
@@ -91,7 +104,8 @@ int A_output(struct msg message)
     if(pkt_inflight_a) return 0;
     (void)message;
     send_pkt_a = make_packet(seqnum_a, -1, message.data, 20);
-    if(DEBUG)print_packet(send_pkt_a);
+    if(FINAL)print_message(message);
+    if(DEBUG || FINAL)print_packet(send_pkt_a, T);
     tolayer3(A, send_pkt_a);
     starttimer(A, RTO_TIMEOUT);
     pkt_inflight_a = 1;
@@ -102,6 +116,7 @@ int A_output(struct msg message)
 int A_input(struct pkt packet)
 {
     (void)packet;
+    if(FINAL)print_packet(packet, R);
     if(!pkt_inflight_a){
         if(DEBUG)
             printf("No inflight packet. Discard.\n");
@@ -133,8 +148,9 @@ int A_timerinterrupt()
 {
     if(DEBUG){
         printf("Timeout occurred. Retransmission and restart timer.\n");
-        print_packet(send_pkt_a);
+        print_packet(send_pkt_a, T);
     }
+    if(FINAL)print_packet(send_pkt_a, T);
     tolayer3(A, send_pkt_a);
     starttimer(A, RTO_TIMEOUT);
     return 0;
@@ -155,8 +171,9 @@ int A_init()
 int B_input(struct pkt packet)
 {
     (void)packet;
+    if(FINAL)print_packet(packet, R);
     if(DEBUG){
-        print_packet(packet);
+        print_packet(packet, R);
         printf("is_corrupt=%d, has_exp_seqnumber=%d\n",
                 is_corrupt(packet), has_expected_seqnum(B, packet));
     }
@@ -164,6 +181,7 @@ int B_input(struct pkt packet)
     if(is_corrupt(packet) || !has_expected_seqnum(B, packet)){
         if(DEBUG)
             printf("retransmit previous ack\n");
+        if(FINAL)print_packet(send_pkt_b, T);
         tolayer3(B, send_pkt_b);
     }
     else if(!is_corrupt(packet) && has_expected_seqnum(B, packet)){
@@ -171,6 +189,7 @@ int B_input(struct pkt packet)
         tolayer5(B, message.data);
 
         send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
+        if(FINAL)print_packet(send_pkt_b, T);
         tolayer3(B, send_pkt_b);
         seqnum_b = (seqnum_b + 1) % 2;
         if(DEBUG)

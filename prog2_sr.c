@@ -8,6 +8,12 @@
 #define DEBUG 0
 #define min(x, y) (x) > (y) ? (y) : (x)
 
+#define FINAL 0
+#define R 1
+#define T 0
+
+int is_corrupt(struct pkt packet);
+
 struct pkt send_pkt_a[BUFFER_SIZE];
 struct pkt send_pkt_b;
 // Don't need too big buffet only a buffer of window size will work.
@@ -24,26 +30,31 @@ int N;
 int expected_seqnum;
 int rcv_base;
 
-void print_packet(struct pkt packet)
+void print_message(struct msg message){
+    printf("Message Received:");
+    printf("%.20s\n", message.data);
+}
+
+void print_packet(struct pkt packet, int RorT)
 {
-    if(packet.seqnum >= 0 && packet.acknum >= 0)
-    {
+    if(is_corrupt(packet))printf("Corrupted ");
+    if(RorT == R)printf("Packet Received:");
+    else if(RorT ==T)printf("Packet Transmitted:");
+    else printf("Packet Buffered:");
+    if(packet.seqnum >= 0 && packet.acknum >= 0){
         printf("secnum = %d, acknum = %d, checksum = %d, data = %.20s\n",
-               packet.seqnum,
-               packet.acknum,
-               packet.checksum,
-               packet.payload);
+            packet.seqnum,
+            packet.acknum,
+            packet.checksum,
+            packet.payload);
     }
-    else if(packet.seqnum >= 0)
-    {
+    else if(packet.seqnum >= 0){
         printf("secnum = %d, checksum = %d, data = %.20s\n",
-               packet.seqnum,
-               packet.checksum,
-               packet.payload);
-    }
-    else if(packet.acknum >= 0)
-    {
-        printf("ack_received = %d\n", packet.acknum);
+            packet.seqnum,
+            packet.checksum,
+            packet.payload);
+    }else if(packet.acknum >= 0){
+        printf("acknum= %d data=\n", packet.acknum);
     }
 }
 
@@ -91,6 +102,7 @@ void refuse_data(struct msg message)
     }
     send_pkt_a[ind(next_seqnum_a)] =
         make_packet(next_seqnum_a, -1, message.data, 20);
+    if(FINAL)print_packet(send_pkt_a[ind(next_seqnum_a)], -1);
     next_seqnum_a++;
 }
 
@@ -126,6 +138,7 @@ void transmit(int seqnum)
     acked_a[ind(seqnum)] = 0;
     // printf("seqnum %d mod %d ack %d\n",
     // seqnum, ind(seqnum), acked_a[ind(seqnum)]);
+    if(FINAL)print_packet(send_pkt_a[ind(seqnum)], T);
     tolayer3(A, send_pkt_a[ind(seqnum)]);
     // printf("sndb %d seqn %d\n", send_base, seqnum);
     timers[ind(seqnum)] = time + RTO_TIMEOUT;
@@ -135,6 +148,7 @@ void transmit(int seqnum)
 int A_output(struct msg message)
 {
     (void)message;
+    if(FINAL)print_message(message);
     if(next_seqnum_a < send_base + N)
     {
         send_pkt_a[ind(next_seqnum_a)] =
@@ -149,8 +163,9 @@ int A_output(struct msg message)
 
     if(DEBUG){
         printf("nextseqnum %d\n", next_seqnum_a);
-        print_packet(send_pkt_a[ind(next_seqnum_a-1)]);
-        if(!(next_seqnum_a - 1 < send_base + N))printf("Packet Buffered.\n");
+        print_packet(send_pkt_a[ind(next_seqnum_a-1)], T);
+        if(!(next_seqnum_a - 1 < send_base + N))
+            printf("Packet Buffered.\n");
     }
     return 0;
 }
@@ -161,6 +176,7 @@ int A_input(struct pkt packet)
     (void)packet;
     int i, prev_end;
     float minimum;
+    if(FINAL)print_packet(packet, R);
     if(send_base <= packet.acknum && packet.acknum < send_base + N
             && !is_corrupt(packet))
     {
@@ -199,7 +215,7 @@ int A_input(struct pkt packet)
     }
     if(DEBUG){
         printf("Corrupted: %d\n", is_corrupt(packet));
-        if(!is_corrupt(packet))print_packet(packet);
+        if(!is_corrupt(packet))print_packet(packet, R);
         printf("SNDWND:\t");
         for(i=send_base; i < send_base + N; i++)
             printf("%d\t", i);
@@ -274,13 +290,14 @@ int B_input(struct pkt packet)
 {
     (void)packet;
     int i;
-    // printf("is_corrupt %d\n", is_corrupt(packet));
+    if(FINAL)print_packet(packet, R);
     if(!is_corrupt(packet))
     {
         if(rcv_base <= packet.seqnum && packet.seqnum < rcv_base + N)
         {
             received_pkt_b[ind(packet.seqnum)] = packet;
             send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
+            if(FINAL)print_packet(send_pkt_b, T);
             tolayer3(B, send_pkt_b);
             acked_b[ind(packet.seqnum)] = 1;
             if(rcv_base == packet.seqnum)
@@ -296,12 +313,13 @@ int B_input(struct pkt packet)
             }
         }else if(rcv_base - N <= packet.seqnum && packet.seqnum <=rcv_base-1){
             send_pkt_b = make_packet(-1, packet.seqnum, NULL, 0);
+            if(FINAL)print_packet(send_pkt_b, T);
             tolayer3(B, send_pkt_b);
         }
     }
     if(DEBUG){
         printf("Corrupted: %d\n", is_corrupt(packet));
-        if(!is_corrupt(packet))print_packet(packet);
+        if(!is_corrupt(packet))print_packet(packet, R);
         printf("RCVWND:\t");
         for(i=rcv_base; i < rcv_base+ N; i++)
             printf("%d\t", i);

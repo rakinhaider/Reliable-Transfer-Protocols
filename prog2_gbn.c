@@ -8,6 +8,12 @@
 #define DEBUG 0
 #define min(x, y) (x) > (y) ? (y) : (x)
 
+#define FINAL 0
+#define R 1
+#define T 0
+
+int is_corrupt(struct pkt packet);
+
 struct pkt send_pkt_a[BUFFER_SIZE];
 struct pkt send_pkt_b;
 
@@ -18,26 +24,31 @@ int next_seqnum;
 int N;
 int expected_seqnum;
 
-void print_packet(struct pkt packet)
+void print_message(struct msg message){
+    printf("Message Received:");
+    printf("%.20s\n", message.data);
+}
+
+void print_packet(struct pkt packet, int RorT)
 {
-    if(packet.seqnum >= 0 && packet.acknum >= 0)
-    {
+    if(is_corrupt(packet))printf("Corrupted ");
+    if(RorT == R)printf("Packet Received:");
+    else if(RorT ==T)printf("Packet Transmitted:");
+    else printf("Packet Buffered:");
+    if(packet.seqnum >= 0 && packet.acknum >= 0){
         printf("secnum = %d, acknum = %d, checksum = %d, data = %.20s\n",
-               packet.seqnum,
-               packet.acknum,
-               packet.checksum,
-               packet.payload);
+            packet.seqnum,
+            packet.acknum,
+            packet.checksum,
+            packet.payload);
     }
-    else if(packet.seqnum >= 0)
-    {
+    else if(packet.seqnum >= 0){
         printf("secnum = %d, checksum = %d, data = %.20s\n",
-               packet.seqnum,
-               packet.checksum,
-               packet.payload);
-    }
-    else if(packet.acknum >= 0)
-    {
-        printf("ack_received = %d\n", packet.acknum);
+            packet.seqnum,
+            packet.checksum,
+            packet.payload);
+    }else if(packet.acknum >= 0){
+        printf("acknum= %d data=\n", packet.acknum);
     }
 }
 
@@ -82,6 +93,7 @@ void refuse_data(struct msg message){
         exit(1);
     }
     send_pkt_a[ind(next_seqnum)] = make_packet(next_seqnum, -1, message.data, 20);
+    if(FINAL)print_packet(send_pkt_a[ind(next_seqnum)], -1);
     next_seqnum++;
 }
 
@@ -101,8 +113,10 @@ int has_expected_seqnum(struct pkt packet){
 int A_output(struct msg message)
 {
     (void)message;
+    if(FINAL)print_message(message);
     if(next_seqnum < base + N){
         send_pkt_a[ind(next_seqnum)] = make_packet(next_seqnum, -1, message.data, 20);
+        if(FINAL)print_packet(send_pkt_a[ind(next_seqnum)], T);
         tolayer3(A, send_pkt_a[ind(next_seqnum)]);
         if(base == next_seqnum)
             starttimer(A, RTO_TIMEOUT);
@@ -111,7 +125,7 @@ int A_output(struct msg message)
         refuse_data(message);
     if(DEBUG){
         printf("nextseqnum %d\n", next_seqnum);
-        print_packet(send_pkt_a[ind(next_seqnum-1)]);
+        print_packet(send_pkt_a[ind(next_seqnum-1)], T);
         if(!(next_seqnum < base + N))printf("Packet buffered.\n");
 
     }
@@ -123,11 +137,11 @@ int A_input(struct pkt packet)
 {
     (void)packet;
     int i, prev_end, endwnd;
-    //print_packet(packet);
+    if(FINAL)print_packet(packet, R);
     if(DEBUG){
         if(is_corrupt(packet))
             printf("Ack corrupted\n");
-        else print_packet(packet);
+        else print_packet(packet, R);
     }
     if(!is_corrupt(packet)){
         if(base == packet.acknum + 1) return 0;
@@ -143,6 +157,7 @@ int A_input(struct pkt packet)
                 for(i = prev_end; i < endwnd; i++){
                     if(DEBUG)
                         printf("Transmitting %d\n", i);
+                    if(FINAL)print_packet(send_pkt_a[ind(i)], T);
                     tolayer3(A, send_pkt_a[ind(i)]);
                 }
             }
@@ -167,6 +182,7 @@ int A_timerinterrupt()
     for(i = base; i < base + N && i < next_seqnum; i++){
         if(DEBUG)
             printf("Re-transmitting %d\n", i);
+        if(FINAL)print_packet(send_pkt_a[ind(i)], T);
         tolayer3(A, send_pkt_a[ind(i)]);
     }
     return 0;
@@ -190,9 +206,10 @@ int A_init()
 int B_input(struct pkt packet)
 {
     (void)packet;
+    if(FINAL)print_packet(packet, R);
     if(!is_corrupt(packet) && has_expected_seqnum(packet)){
         if(DEBUG){
-            print_packet(packet);
+            print_packet(packet, R);
             printf("Expected packet found.\n");
             printf("Ack sent. Delivered\n");
         }
@@ -200,14 +217,16 @@ int B_input(struct pkt packet)
         tolayer5(B, message.data);
 
         send_pkt_b = make_packet(-1, expected_seqnum, NULL, 0);
+        if(FINAL)print_packet(send_pkt_b, T);
         tolayer3(B, send_pkt_b);
         expected_seqnum++;
     }else{
         if(DEBUG){
-            print_packet(packet);
+            print_packet(packet, R);
             if(is_corrupt(packet))printf("Corrupted.\n");
             printf("Nack sent.\n");
         }
+        if(FINAL)print_packet(send_pkt_b, T);
         tolayer3(B, send_pkt_b);
     }
     return 0;
